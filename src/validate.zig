@@ -6,6 +6,8 @@ pub const simdVectorLength = optionalSimdVectorLength orelse @sizeOf(usize);
 pub const Chunk = @Vector(simdVectorLength, u8);
 
 
+pub const ABCD = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
 /// Validates that the input is a valid Ceser Cipher string
 /// (i.e. it contains only uppercase letters
 pub fn validate(data: []const u8) bool {
