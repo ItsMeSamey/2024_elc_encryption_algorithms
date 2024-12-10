@@ -74,3 +74,7 @@ test {
   try std.testing.expectEqualStrings(abcs, &shifted_buf);
 }
 
+test {
+  std.testing.refAllDeclsRecursive(@This());
+}
+

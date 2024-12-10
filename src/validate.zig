@@ -33,3 +33,7 @@ test validate {
   try std.testing.expect(!validate("ABCDEFGHIJKLMN!OPQRSTUVWXYZZ"));
 }
 
+test {
+  std.testing.refAllDeclsRecursive(@This());
+}
+

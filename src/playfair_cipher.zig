@@ -142,7 +142,7 @@ pub fn encryptAllocator(self: *@This(), data: []const u8, allocator: std.mem.All
 
 const OOM = std.mem.Allocator.Error.OutOfMemory;
 /// Tries to encrypt the input, if slice is not large enough it will return OOM error
-pub fn encryptBufAssumecapacity(self: *@This(), data: []const u8, slice: []u8) std.mem.Allocator![]u8 {
+pub fn encryptBufAssumecapacity(self: *@This(), data: []const u8, slice: []u8) std.mem.Allocator.Error![]u8 {
   if (data.len > slice.len) return OOM;
 
   // failing_allocator that always returns OOM
@@ -151,7 +151,7 @@ pub fn encryptBufAssumecapacity(self: *@This(), data: []const u8, slice: []u8) s
   var out_string = String.init(allocator);
   out_string.items = slice;
   out_string.capacity = slice.len;
-  out_string.len = 0;
+  out_string.items.len = 0;
 
   try fixInput(self, data, &out_string);
   self.encryptFixed(out_string.items);
@@ -231,5 +231,7 @@ test {
   try std.testing.expectEqualStrings(MESSAGE, message);
 }
 
-
+test {
+  std.testing.refAllDeclsRecursive(@This());
+}
 
