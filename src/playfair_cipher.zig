@@ -18,10 +18,6 @@ const IndexPair = packed struct {
   y: u4,
 };
 
-fn getIdxPtr(self: *@This()) [*]IndexPair {
-  return @ptrFromInt(@intFromPtr(&self.indexLookup) - @as(usize, 'A'));
-}
-
 const keyError = error{ InvalidKey };
 
 /// Setup the indexLookup table and the missing character
@@ -39,7 +35,7 @@ fn getMissingCharacter(self: *@This()) keyError!void {
   for (Validate.ABCD, 0..) |byte, i| {
     if (done.isSet(i)) continue;
     self.missing = byte;
-    self.indexLookup[i] = self.getIdxPtr()[self.replacement];
+    self.indexLookup[i] = self.indexLookup[self.replacement - 'A'];
   }
 }
 
@@ -91,13 +87,11 @@ fn fixInput(self: *@This(), input: []const u8, out: *String) !void {
 fn encryptFixed(self: *@This(), data: []u8) void {
   // The input must be of even length
   std.debug.assert(data.len & 1 == 0);
-  const lt = self.getIdxPtr();
 
   var i: usize = 0;
   while (i < data.len): (i += 2) {
-    var first = lt[data[i]];
-    var second = lt[data[i + 1]];
-
+    var first  = self.indexLookup[data[i] - 'A'];
+    var second = self.indexLookup[data[i + 1] - 'A'];
 
     if (builtin.mode == .Debug) {
       if (first.x == second.x and first.y == second.y) {
@@ -168,12 +162,11 @@ pub fn decryptImmutable(self: *@This(), data: []const u8, out: []u8) void {
   // The input must be of even length
   std.debug.assert(data.len & 1 == 0);
   std.debug.assert(data.len <= out.len);
-  const lt = self.getIdxPtr();
 
   var i: usize = 0;
   while (i < data.len): (i += 2) {
-    var first = lt[data[i]];
-    var second =  lt[data[i + 1]];
+    var first  = self.indexLookup[data[i] - 'A'];
+    var second = self.indexLookup[data[i + 1] - 'A'];
 
     if (builtin.mode == .Debug) {
       if (first.x == second.x and first.y == second.y) {
