@@ -1,12 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const halfusize = std.meta.Int(.unsigned, @sizeOf(usize) * 4);
-fn GetSquareMatrix(T: type, zero: T) type {
+fn GetSquareMatrix(T: type) type {
   return struct {
     size: halfusize,
     data: [*]T,
 
-    /// Create a new matric, data is left uninitialized
+    /// Create a new matrix, data is left uninitialized
     pub fn new(allocator: std.mem.Allocator, size: halfusize) !@This() {
       return @This(){
         .size = size,
@@ -22,23 +23,11 @@ fn GetSquareMatrix(T: type, zero: T) type {
       };
     }
 
-    /// Convert this matrix to identity matrix
-    pub fn toIdentity(self: @This()) void {
-      var till: usize = 0;
-      for (0..self.size) |i| {
-        const v = self.data[till..][0..self.size];
-        till += self.size;
-        for (0..self.size) |j| {
-          v[j] = if (i == j) 1 else 0;
-        }
-      }      
-    }
-
     /// get pointer to value at x, y
     pub fn get(self: @This(), x: halfusize, y: halfusize) *T {
       std.debug.assert(x < self.size);
       std.debug.assert(y < self.size);
-      return &self.data[x * @as(usize, self.size) + y];
+      return &self.data[@as(usize, x)*@as(usize, self.size) + @as(usize, y)];
     }
 
     /// if this function returns false, the matrix is not invertible
@@ -51,120 +40,140 @@ fn GetSquareMatrix(T: type, zero: T) type {
       }
     }
 
+    /// Struct used for gaussian elimination
     pub const RowPairs = struct {
       a: [*]T,
       b: [*]T,
     };
 
-    fn getRowPairsSlice(self: @This(), allocator: std.mem.Allocator) !RowPairs {
-      return allocator.alloc(RowPairs, self.size);
-    }
+    const MatrixInversionError = error {NonInvertible};
 
-    fn nonNullDiagonal(pointers: []RowPairs, size: halfusize, row: halfusize) !void {
-      pointers[row].a[row] == 0;
-      for (row..size) |i| {
-        if (pointers[i].a[row] != 0) {
-          const temp = pointers[row];
-          pointers[row] = pointers[i];
-          pointers[i] = temp;
+    /// Makes sure that the diagonal entries are non-zero, if it is impossible to do s, returns error.NonInvertible
+    fn nonNullDiagonal(pointers: []RowPairs, row: halfusize) MatrixInversionError!void {
+      if (pointers[row].a[row] == 0) {
+        for (row..pointers.len) |i| {
+          if (pointers[i].a[row] != 0) {
+            const temp = pointers[row];
+            pointers[row] = pointers[i];
+            pointers[i] = temp;
 
-          return try nonNullDiagonal(pointers, size, row + 1) catch {
-            pointers[i] = pointers[row];
-            pointers[row] = temp;
-            continue;
-          };
+            return nonNullDiagonal(pointers, row + 1) catch {
+              pointers[i] = pointers[row];
+              pointers[row] = temp;
+              continue;
+            };
+          }
+        }
+        return MatrixInversionError.NonInvertible;
+      } else {
+        for (row..pointers.len) |i| {
+          if (pointers[i].a[i] == 0) return nonNullDiagonal(pointers, @intCast(i)) catch {};
         }
       }
-      return error.NonInvertible;
     }
 
+    /// Row operations on first matrix
     fn subRowA(pointers: []RowPairs, factor: T, src: halfusize, dest: halfusize, from: halfusize, till: halfusize) void {
       for (from..till) |i| {
         pointers[dest].a[i] -= factor * pointers[src].a[i];
       }
     }
 
+    /// row operations on second matrix
     fn subRowB(pointers: []RowPairs, factor: T, src: halfusize, dest: halfusize, from: halfusize, till: halfusize) void {
       for (from..till) |i| {
         pointers[dest].b[i] -= factor * pointers[src].b[i];
       }
     }
 
-
     /// This matrix is on longer usable after this function is called
     /// self and dest must *NOT* be same
-    fn invertToDestPointers(self: @This(), dest: @This(), pointers: []RowPairs) !void {
+    pub fn invertToDestPointers(self: @This(), dest: @This(), pointers: []RowPairs) MatrixInversionError!void {
       // The dest must neevr be same as source matrix
-      std.debug.assert(@intFromPtr(self) != @intFromPtr(dest));
+      std.debug.assert(@intFromPtr(self.data) != @intFromPtr(dest.data));
 
       const size = self.size;
       std.debug.assert(size == dest.size);
       std.debug.assert(size == pointers.len);
 
-      dest.toIdentity();
-
       var from: usize = 0;
       for (0..size) |i| {
-        pointers[i].a = self.data[from..].ptr;
-        pointers[i].b = dest.data[from..].ptr;
+        pointers[i].a = self.data[from..];
+        pointers[i].b = dest.data[from..];
         from += size;
       }
 
-      try nonNullDiagonal(pointers, size, 0);
+      try nonNullDiagonal(pointers, 0);
+      @memset(dest.data[0..size], 0);
+      for (0..size) |i| pointers[i].b[i] = 1;
 
       // Perform Gaussian elimination
       for (0..size) |row| {
-        if (pointers[row].a[row] == 0) try nonNullDiagonal(pointers, size, row);
+        debugPrintPointers(pointers);
+        if (pointers[row].a[row] == 0) {
+          try nonNullDiagonal(pointers, @intCast(row));
+        }
 
         const diag = pointers[row].a[row];
         for (row+1..size) |other_row| {
           const factor = pointers[other_row].a[row] / diag;
-          subRowA(pointers, factor, row, other_row, 0, size);
-          subRowB(pointers, factor, row, other_row, 0, size);
+          subRowA(pointers, factor, @intCast(row), @intCast(other_row), 0, size);
+          subRowB(pointers, factor, @intCast(row), @intCast(other_row), 0, size);
         }
       }
 
+
       // Make `a` as diagonal matrix
       for (0..size) |row| {
-        const diag = pointers[row].a[row];
-        for (0..size - row - 1) |other_row| {
-          const factor = pointers[other_row].a[row] / diag;
-          pointers[other_row].a[row] = 0;
-          subRowB(pointers, factor, other_row, row, 0, size);
+        debugPrintPointers(pointers);
+        const _row_ = size - row - 1;
+        const diag = pointers[_row_].a[_row_];
+        for (0.._row_) |other_row| {
+          const factor = pointers[other_row].a[_row_] / diag;
+          if (builtin.mode == .Debug) subRowA(pointers, factor, @intCast(_row_), @intCast(other_row), 0, size);
+          subRowB(pointers, factor, @intCast(_row_), @intCast(other_row), 0, size);
         }
       }
 
       // Make `a` as identity matrix
       for (0..size) |row| {
+        debugPrintPointers(pointers);
         const factor = pointers[row].a[row];
         for (0..size) |col| {
+          if (builtin.mode == .Debug) pointers[row].a[col] /= factor;
           pointers[row].b[col] /= factor;
         }
       }
+
+      debugPrintPointers(pointers);
+
+      dest.debugPrint();
     }
+
+    const invertWithAllocatorError = MatrixInversionError || std.mem.Allocator.Error;
 
     /// Inverts and returns the inverted matrix, destroying this one
     /// The caller must free both the matrices
-    fn invertWithAllocator(self: *@This(), allocator: std.mem.Allocator) !@This() {
+    pub fn invertWithAllocator(self: *@This(), allocator: std.mem.Allocator) invertWithAllocatorError!@This() {
       const dest = try new(allocator, self.size);
       errdefer dest.deinit(allocator);
 
-      const pointers = try getRowPairsSlice(self, allocator);
+      const pointers = try allocator.alloc(RowPairs, self.size);
       try self.invertToDestPointers(dest, pointers);
       return dest;
     }
 
     /// Multiply this matrix by a vector and store the result in dest
     /// vector and dest must *NOT* be same
-    fn mulVector(self: *const @This(), vector: []const T, dest: []T) void {
-      std.debug.assert(@intFromPtr(vector) != @intFromPtr(dest));
+    pub fn mulVector(self: *const @This(), vector: []const T, dest: []T) void {
+      std.debug.assert(@intFromPtr(vector.ptr) != @intFromPtr(dest.ptr));
       std.debug.assert(vector.len == self.size);
       std.debug.assert(dest.len == self.size);
 
-      @memset(dest, zero);
+      @memset(dest, 0);
       var from: usize = 0;
       for (0..self.size) |i| {
-        const v = self.data[from..self.size];
+        const v = self.data[from..][0..self.size];
         from += self.size;
         for (0..self.size) |j| {
           dest[i] += v[j] * vector[j];
@@ -172,8 +181,37 @@ fn GetSquareMatrix(T: type, zero: T) type {
       }
     }
 
-    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    /// Free this matrix
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
       allocator.free(self.data[0..@as(usize, self.size) * @as(usize, self.size)]);
+    }
+
+    const format = "{d:4.4} ";
+
+    /// Prints the matrix
+    pub fn print(self: @This(), writer: std.io.AnyWriter) !void {
+      for (0..self.size) |i| {
+        for (0..self.size) |j| {
+          try writer.print(format, .{self.get(@intCast(i), @intCast(j)).*});
+        }
+        try writer.print("\n", .{});
+      }
+    }
+
+    /// Print matrix but ignore errors
+    fn debugPrint(self: @This()) void {
+      self.print(std.io.getStdOut().writer().any()) catch {};
+    }
+
+    /// Print the matrix as represenred by pointers slice
+    fn debugPrintPointers(pointers: []RowPairs) void {
+      for (pointers) |row| {
+        for (row.a[0..pointers.len]) |v| std.debug.print(format, .{v});
+        std.debug.print("| ", .{});
+        for (row.b[0..pointers.len]) |v| std.debug.print(format, .{v});
+        std.debug.print("\n", .{});
+      }
+      std.debug.print("\n", .{});
     }
   };
 }
@@ -182,36 +220,47 @@ test GetSquareMatrix {
   const allocator = std.heap.page_allocator;
 
   const matrixSize = 3;
-  const MatrixType = GetSquareMatrix(u8, 0);
+  const dataType = f32;
+  const MatrixType = GetSquareMatrix(dataType);
 
-
-  // Create a square matrix
   var matrix = try MatrixType.new(allocator, matrixSize);
   defer matrix.deinit(allocator);
 
-  // Initialize the matrix with some values
-  matrix.data[0] = 4;
-  matrix.data[1] = 7;
-  matrix.data[2] = 2;
-  matrix.data[3] = 3;
-  matrix.data[4] = 6;
-  matrix.data[5] = 1;
-  matrix.data[6] = 2;
-  matrix.data[7] = 5;
-  matrix.data[8] = 3;
+  for (0..matrixSize * matrixSize) |i| {
+    matrix.data[i] = @floatFromInt(i*i + 1);
+  }
 
+  var dupe = try matrix.dupe(allocator);
+  defer dupe.deinit(allocator);
 
-  // Invert the matrix
-  var inverseMatrix = try matrix.invertWithAllocator(allocator);
+  var inverseMatrix = try dupe.invertWithAllocator(allocator);
   defer inverseMatrix.deinit(allocator);
 
-  // Print the inverse matrix
-  for (0 .. matrixSize) |i| {
-    for (0 .. matrixSize) |j| {
-      std.debug.print("{d:.2} ", .{ inverseMatrix.get(@intCast(i), @intCast(j)).* });
-    }
-    std.debug.print("\n", .{});
+  const vec = try allocator.alloc(dataType, matrixSize);
+  defer allocator.free(vec);
+
+  const vec_out = try allocator.alloc(dataType, matrixSize);
+  defer allocator.free(vec_out);
+
+  const vec_copy = try allocator.alloc(dataType, matrixSize);
+  defer allocator.free(vec_copy);
+
+  for (0..matrixSize) |i| {
+    vec[i] = @floatFromInt(i);
   }
+
+  @memcpy(vec_copy, vec);
+
+  matrix.mulVector(vec, vec_out);
+
+  std.debug.print("\n", .{});
+  for (vec_out) |i| std.debug.print("{d:.1} ", .{ i });
+  std.debug.print("\n", .{});
+
+  inverseMatrix.mulVector(vec_out, vec);
+
+
+  try std.testing.expectEqualSlices(dataType, vec_copy, vec);
 }
 
 test {
