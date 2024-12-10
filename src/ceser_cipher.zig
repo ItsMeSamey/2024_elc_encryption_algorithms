@@ -3,6 +3,7 @@ const std = @import("std");
 /// Shifting direction for Ceser Cipher
 const ShiftingDirection = enum { increase, decrease };
 
+/// Simd stuff for fast validate
 const optionalSimdVectorLength: ?comptime_int = std.simd.suggestVectorLength(u8);
 pub const simdVectorLength = optionalSimdVectorLength orelse @sizeOf(usize);
 pub const Chunk = @Vector(simdVectorLength, u8);
@@ -33,72 +34,8 @@ test validate {
   try std.testing.expect(!validate("ABCDEFGHIJKLMN!OPQRSTUVWXYZZ"));
 }
 
-const SimdCeserCipher = struct {
-  shift_amount: u5,
-  shift_direction: ShiftingDirection,
-
-  pub fn init(amount: usize, direction: ShiftingDirection) @This() {
-    return .{
-      .shift_amount = @intCast(amount & 31),
-      .shift_direction = direction,
-    };
-  }
-
-  fn uoptimizedOperate(self: *const @This(), bytes: []u8, comptime direction: ShiftingDirection) void {
-    for (0..bytes.len) |i| {
-      if (direction == .increase) {
-        bytes[i] += self.shift_amount;
-        if (bytes[i] > 'Z') {
-          bytes[i] -= 'Z' + 1 - 'A';
-        }
-      } else {
-        bytes[i] -= self.shift_amount;
-        if (bytes[i] < 'A') {
-          bytes[i] += 'Z' + 1 - 'A';
-        }
-      }
-    }
-  }
-
-  fn operate(self: *const @This(), bytes: []align(simdVectorLength) u8, comptime direction: ShiftingDirection) void {
-    const shift_vec: @Vector(simdVectorLength, u8) = @splat(@mod(self.shift_amount, 26));
-    const sub_vec: @Vector(simdVectorLength, u8) = @splat('Z' + 1 - 'A');
-
-    const till = (bytes.len - 1) / simdVectorLength;
-    for (0..till) |i| {
-      const chunk: *Chunk = @alignCast(@ptrCast(bytes[i * simdVectorLength ..][0..simdVectorLength]));
-      chunk.* += shift_vec;
-      if (direction == .increase) {
-        chunk.* += shift_vec;
-        const max: Chunk = @splat('Z');
-        const outliars = (chunk.* > max);
-        chunk.* = @select(u8, outliars, chunk.* - sub_vec, chunk.*);
-      } else {
-        chunk.* -= shift_vec;
-        const min: Chunk = @splat('A');
-        const outliars = (chunk.* < min);
-        chunk.* = @select(u8, outliars, chunk.* + sub_vec, chunk.*);
-      }
-    }
-
-    self.uoptimizedOperate(bytes[till..], direction);
-  }
-
-  pub fn encrypt(self: *const @This(), data: []align(simdVectorLength) u8) void {
-    switch (self.shift_direction) {
-      inline .increase => self.operate(data, .increase),
-      inline .decrease => self.operate(data, .decrease),
-    }
-  }
-
-  pub fn decrypt(self: *const @This(), data: []align(simdVectorLength) u8) void {
-    switch (self.shift_direction) {
-      inline .increase => self.operate(data, .decrease),
-      inline .decrease => self.operate(data, .increase),
-    }
-  }
-};
-
+/// Simd approach involves @select and turns out to be even slower,
+/// or its a skill issue form my side ;)
 const CeserCipher = struct {
   shift_amount: u5,
   shift_direction: ShiftingDirection,
@@ -140,28 +77,12 @@ const CeserCipher = struct {
   }
 };
 
-test SimdCeserCipher {
-  var ce = SimdCeserCipher.init(5, .increase);
 
-  const abcs = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  var abcs_buf: [abcs.len]u8 align(simdVectorLength) = undefined;
-  @memcpy(&abcs_buf, abcs);
-
-  var shifted_buf: [abcs.len]u8 align(simdVectorLength) = undefined;
-  @memcpy(&shifted_buf, abcs);
-  std.mem.rotate(u8, &shifted_buf, ce.shift_amount);
-
-  ce.encrypt(&abcs_buf);
-  try std.testing.expectEqualStrings(&shifted_buf, &abcs_buf);
-
-  ce.decrypt(&shifted_buf);
-  try std.testing.expectEqualStrings(abcs, &shifted_buf);
-}
-
+// a simple test for correctness of CeserCipher
 test CeserCipher {
   var ce = CeserCipher.init(5, .increase);
 
-  const abcs = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const abcs = CeserCipher.abc;
   var abcs_buf: [abcs.len]u8 align(simdVectorLength) = undefined;
   @memcpy(&abcs_buf, abcs);
 
@@ -176,6 +97,7 @@ test CeserCipher {
   try std.testing.expectEqualStrings(abcs, &shifted_buf);
 }
 
+/// A helper function for testing speed
 fn speedtest(data: []align(simdVectorLength) u8, ce: anytype, times: usize) u64 {
   var timer = std.time.Timer.start() catch unreachable;
   for (0..times) |_| {
@@ -185,6 +107,7 @@ fn speedtest(data: []align(simdVectorLength) u8, ce: anytype, times: usize) u64 
   return timer.read();
 }
 
+/// give a random seed for the PRNG (this can never fail)
 fn getPrng() std.Random.DefaultPrng {
   if (@inComptime()) @compileError("Rng cannot be initilaized at comptime");
   return std.Random.DefaultPrng.init(init: {
@@ -213,15 +136,15 @@ pub fn main() !void {
     byte.* = random.intRangeAtMost(u8, 'A', 'Z');
   }
 
-  const sce = SimdCeserCipher.init(5, .increase);
-  const ce = SimdCeserCipher.init(5, .increase);
+  const ce = CeserCipher.init(5, .increase);
+
+  {
+    const warmupTimes = 2;
+    _ = speedtest(memory, ce, warmupTimes);
+  }
 
   const times = 1 << 5;
-
-  const time_sce = speedtest(memory, sce, times);
   const time_ce = speedtest(memory, ce, times);
-
-  std.log.info("SimdCeserCipher: time: {d:6.2} ns/byte", .{time_sce});
-  std.log.info("CeserCipher: time: {d:6.2} ns/byte", .{time_ce});
+  std.debug.print("CeserCipher: time: \t{d:.6} ns/byte\n", .{@as(f128, @floatFromInt(time_ce)) / @as(f128, @floatFromInt(memory.len))});
 }
 
