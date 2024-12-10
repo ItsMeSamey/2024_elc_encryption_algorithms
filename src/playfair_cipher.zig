@@ -6,12 +6,12 @@ const builtin = @import("builtin");
 const Validate = @import("validate.zig");
 
 key: [5][5]u8,
-missing: u8 = 'J',
-replacement: u8 = 'I',
-uncommon: u8 = 'X',
-secondary_uncommon: u8 = 'Q',
+missing: u8,
+replacement: u8,
+uncommon: u8,
+secondary_uncommon: u8,
 
-indexLookup: [Validate.ABCD.len]IndexPair,
+indexLookup: [Validate.ABCD.len]IndexPair = undefined,
 
 const IndexPair = packed struct {
   x: u4,
@@ -25,13 +25,12 @@ fn getIdxPtr(self: *@This()) [*]IndexPair {
 const keyError = error{ InvalidKey };
 
 /// Setup the indexLookup table and the missing character
-fn getMissingCharacter(self: *@This()) !void {
-  const lt = self.getIdxPtr();
+fn getMissingCharacter(self: *@This()) keyError!void {
   var done = std.bit_set.IntegerBitSet(Validate.ABCD.len).initEmpty();
   for (self.key, 0..) |row, x| {
     for (row, 0..) |byte, y| {
       const idx = std.mem.indexOfScalar(u8, Validate.ABCD, byte).?;
-      lt[idx] = IndexPair{ .x = @intCast(x), .y = @intCast(y) };
+      self.indexLookup[idx] = IndexPair{ .x = @intCast(x), .y = @intCast(y) };
       done.set(idx);
     }
   }
@@ -40,21 +39,23 @@ fn getMissingCharacter(self: *@This()) !void {
   for (Validate.ABCD, 0..) |byte, i| {
     if (done.isSet(i)) continue;
     self.missing = byte;
-    lt[i] = lt[self.replacement];
+    self.indexLookup[i] = self.getIdxPtr()[self.replacement];
   }
 }
 
 /// Init the Playfair Cipher, returns error.InvalidKey if key is invalid
-pub fn init(key: [5][5]u8, replacement: u8, uncommon: u8, secondary_uncommon: u8) keyError!@This() {
+pub fn init(key: [5][5]u8, replacement: u8, uncommon: u8, secondary_uncommon: u8) !@This() {
   // Ensure that all characters in key are unique
-  var self = @This(){
+  var self: @This() = .{
     .key = key,
+    .missing = undefined,
     .replacement = replacement,
     .uncommon = uncommon,
     .secondary_uncommon = secondary_uncommon,
-    .missing = undefined,
-    .indexLookup = undefined,
   };
+
+  // self.missing = ' ';
+  // @memset(std.mem.asBytes(&self.indexLookup), 0);
 
   try self.getMissingCharacter();
   return self;
@@ -63,13 +64,18 @@ pub fn init(key: [5][5]u8, replacement: u8, uncommon: u8, secondary_uncommon: u8
 /// Alias for general purpose expanding sltring
 const String = std.ArrayList(u8);
 
+
 /// Fix the input so that it follows the rules of Playfair Cipher
 fn fixInput(self: *@This(), input: []const u8, out: *String) !void {
   try out.append(input[0]);
   for (input[1..]) |byte| {
-    const to_insrert = if (byte == self.missing) byte else self.replacement;
-    if (to_insrert == out.getLast()) {
-      try out.append(if(to_insrert == self.uncommon) self.secondary_uncommon else self.uncommon); 
+    const to_insrert = if (byte == self.missing) self.replacement else byte;
+    const last = out.getLast();
+    if (to_insrert == last) {
+      try out.append(if(last == self.uncommon) self.secondary_uncommon else self.uncommon); 
+      if (to_insrert == out.getLast()) {
+        try out.append(if(to_insrert == self.uncommon) self.secondary_uncommon else self.uncommon);
+      }
     }
     try out.append(to_insrert);
   }
@@ -90,9 +96,19 @@ fn encryptFixed(self: *@This(), data: []u8) void {
   var i: usize = 0;
   while (i < data.len): (i += 2) {
     var first = lt[data[i]];
-    var second =  lt[data[i + 1]];
+    var second = lt[data[i + 1]];
 
-    std.debug.assert(first.x != second.x or first.y != second.y);
+
+    if (builtin.mode == .Debug) {
+      if (first.x == second.x and first.y == second.y) {
+        std.debug.print("failed at index {d}\n", .{ i });
+        std.debug.print("{s}\n", .{ data });
+        for (0..i) |_| std.debug.print("~", .{});
+        std.debug.print("^\n", .{});
+
+        std.debug.assert(false);
+      }
+    }
     if (first.x == second.x) {
       first.x += 1; if (first.x == 5) first.x = 0;
       second.x += 1; if (second.x == 5) second.x = 0;
@@ -159,7 +175,16 @@ pub fn decryptImmutable(self: *@This(), data: []const u8, out: []u8) void {
     var first = lt[data[i]];
     var second =  lt[data[i + 1]];
 
-    std.debug.assert(first.x != second.x or first.y != second.y);
+    if (builtin.mode == .Debug) {
+      if (first.x == second.x and first.y == second.y) {
+        std.debug.print("failed at index {d}\n", .{ i });
+        std.debug.print("{s}", .{ data });
+        for (0..i) |_| std.debug.print("~", .{});
+        std.debug.print("^", .{});
+
+        std.debug.assert(false);
+      }
+    }
     if (first.x == second.x) {
       if (first.x == 0) first.x = 4 else first.x -= 1;
       if (second.x == 0) second.x = 4 else second.x -= 1;
@@ -180,8 +205,8 @@ pub fn decryptImmutable(self: *@This(), data: []const u8, out: []u8) void {
 }
 
 
+const PlayfairCipher = @This();
 test {
-  const PlayfairCipher = @This();
   var pf = try PlayfairCipher.init(
     [5][5]u8{
       [5]u8{ 'A', 'B', 'C', 'D', 'E' },
@@ -194,13 +219,14 @@ test {
 
   // Helo there there this is a playfair cipher implementation
   // NOTE: we use helo, and not hello because it has repeated l's
-  const MESSAGE = "HELOXTHEREXTHISXISXAXPLAYFAIRXCIPHERXIMPLEMENTATION";
+  //    and the trailing X is to ensure even length
+  const MESSAGE = "HELOXTHEREXTHISXISXAXPLAYFAIRXCIPHERXIMPLEMENTATIONX";
   const allocator = std.testing.allocator;
 
   const message = try pf.encryptAllocator(MESSAGE, allocator);
-  std.debug.print("message: {s}\n", .{message});
+  defer allocator.free(message);
+
   pf.decrypt(message);
-  std.debug.print("decrypted: {s}\n", .{message});
 
   try std.testing.expectEqualStrings(MESSAGE, message);
 }
